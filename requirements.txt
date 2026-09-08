@@ -1,0 +1,8 @@
+docling
+sentence-transformers
+neo4j
+psycopg2-binary
+pgvector
+spacy
+pandas
+streamlit

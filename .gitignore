@@ -1,0 +1,25 @@
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Python Cache & Artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Local Data & Database Volumes (Don't push raw DB storage or uploaded test PDFs)
+data/*
+!data/.gitkeep
+neo4j_data/
+postgres_data/
+
+# IDE & OS Settings
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Environment variables / Secrets
+.env
