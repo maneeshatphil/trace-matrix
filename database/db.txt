@@ -1,0 +1,54 @@
+-- Enable vector extension
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- Central table for Parsed JSON Outputs
+CREATE TABLE IF NOT EXISTS parsed_documents (
+    id SERIAL PRIMARY KEY,
+    file_name VARCHAR(255) UNIQUE NOT NULL,
+    doc_type VARCHAR(50) NOT NULL,                  -- 'PRS', 'PTD', 'TEST' or 'RMM'
+    source_type VARCHAR(50),                        -- 'DOCX', 'PDF', 'EXCEL', 'TEST_FOLDER'
+    raw_payload JSONB NOT NULL,                     -- Full parsed JSON
+    status VARCHAR(50) DEFAULT 'PENDING_LINKING',   -- PENDING_LINKING -> READY_FOR_LINKING -> LINKED
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Index to make Engine 2 queries fast
+CREATE INDEX IF NOT EXISTS idx_parsed_docs_status ON parsed_documents(status);
+
+
+CREATE TABLE IF NOT EXISTS document_chunks (
+    id SERIAL PRIMARY KEY,
+    parent_doc_id VARCHAR(100) NOT NULL,
+    item_id VARCHAR(255) NOT NULL,         -- e.g., Requirement ID or Test Case ID
+    doc_type VARCHAR(50) NOT NULL,          -- 'PRS', 'PTD', 'TEST' or 'RMM'
+    item_type VARCHAR(50) NOT NULL,         -- 'REQUIREMENT', 'TEST_CASE', etc.
+    text_content TEXT NOT NULL,
+    metadata JSONB DEFAULT '{}'::jsonb,     -- Visual evidence, pass/fail status, etc.
+    embedding vector(384),                  -- Must match config.EMBEDDING_DIM (all-MiniLM-L6-v2)
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Vector Similarity Index
+CREATE INDEX IF NOT EXISTS idx_chunks_embedding 
+ON document_chunks USING hnsw (embedding vector_cosine_ops);
+
+-- Engine 2 re-ingestion (delete by parent) and Engine 3 filtering
+CREATE INDEX IF NOT EXISTS idx_chunks_parent_doc ON document_chunks(parent_doc_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_doc_type ON document_chunks(doc_type);
+
+
+CREATE TABLE IF NOT EXISTS traceability_matrix (
+    id SERIAL PRIMARY KEY,
+    source_item_id VARCHAR(255) NOT NULL,    -- e.g., Test Case ID or Risk ID
+    source_doc_type VARCHAR(50) NOT NULL,     -- 'TEST' or 'RMM'
+    target_item_id VARCHAR(255) NOT NULL,    -- e.g., Requirement ID
+    target_doc_type VARCHAR(50) NOT NULL,     -- 'PRS' or 'PTD'
+    match_type VARCHAR(50) NOT NULL,         -- 'EXACT_REGEX', 'SEMANTIC_HIGH', 'SEMANTIC_SUGGESTED'
+    confidence_score FLOAT NOT NULL,         -- 1.0 for exact, Cosine Score for semantic
+    status VARCHAR(50) DEFAULT 'ACTIVE',      -- 'ACTIVE', 'NEEDS_REVIEW', 'REJECTED'
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_trace_link UNIQUE(source_item_id, target_item_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_trace_source ON traceability_matrix(source_item_id);
+CREATE INDEX IF NOT EXISTS idx_trace_target ON traceability_matrix(target_item_id);

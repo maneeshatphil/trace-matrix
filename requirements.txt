@@ -6,3 +6,5 @@ pgvector
 spacy
 pandas
 streamlit
+openpyxl
+pydantic
