@@ -1,5 +1,8 @@
 docling
 sentence-transformers
+# torch 2.14 fails on Windows with WinError 1114 (c10.dll init); 2.5.1 is verified working
+torch==2.5.1
+torchvision==0.20.1
 neo4j
 psycopg2-binary
 pgvector
