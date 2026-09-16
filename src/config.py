@@ -5,8 +5,7 @@ DB_CONFIG = {
     "user": os.getenv("RTM_DB_USER", "admin"),
     "password": os.getenv("RTM_DB_PASSWORD", "password123"),
     "host": os.getenv("RTM_DB_HOST", "localhost"),
-    # Host port published by docker-compose (container listens on 5432 internally)
-    "port": os.getenv("RTM_DB_PORT", "5433"),
+    "port": os.getenv("RTM_DB_PORT", "5432"),
 }
 
 EMBEDDING_MODEL = os.getenv("RTM_EMBEDDING_MODEL", "all-MiniLM-L6-v2")

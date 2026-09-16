@@ -100,10 +100,19 @@ docker compose down -v
 | --- | --- | --- |
 | Neo4j Browser | `http://localhost:7474` | User `neo4j`, password `password123` |
 | Neo4j Bolt | `bolt://localhost:7687` | User `neo4j`, password `password123` |
-| PostgreSQL | `localhost:5433` | Database `rtm_db`, user `admin`, password `password123` |
+| PostgreSQL | `localhost:5432` | Database `rtm_db`, user `admin`, password `password123` |
 
-PostgreSQL is published on host port `5433` because `5432` is commonly taken by a local
-PostgreSQL installation. `src/config.py` defaults to `5433` to match.
+If port `5432` is already taken on your machine by a locally installed PostgreSQL, free it
+rather than editing `docker-compose.yml`. Stop the Windows service and set it to manual
+start from an elevated PowerShell:
+
+```powershell
+Stop-Service -Name postgresql-x64-<version> -Force
+Set-Service -Name postgresql-x64-<version> -StartupType Manual
+```
+
+Alternatively, publish the container on another host port through a local, untracked
+`docker-compose.override.yml` and point the application at it with `RTM_DB_PORT`.
 
 These credentials are development defaults defined in `docker-compose.yml`. Do not use them in a shared or production environment. Configure secrets through environment variables before adding application connections.
 
