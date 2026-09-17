@@ -12,6 +12,7 @@ __pycache__/
 # Local Data & Database Volumes (Don't push raw DB storage or uploaded test PDFs)
 data/*
 !data/.gitkeep
+uploads/
 neo4j_data/
 postgres_data/
 

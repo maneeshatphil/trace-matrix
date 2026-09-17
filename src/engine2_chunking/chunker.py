@@ -3,7 +3,6 @@ import json
 import psycopg2
 from psycopg2.extras import Json, execute_values
 from pathlib import Path
-from sentence_transformers import SentenceTransformer
 
 # Ensure root directory is in python path for imports
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -12,15 +11,29 @@ if str(ROOT_DIR) not in sys.path:
 
 from src.config import DB_CONFIG, EMBEDDING_MODEL, EMBEDDING_DIM
 
-print(f"⏳ Loading embedding model '{EMBEDDING_MODEL}'...")
-embedder = SentenceTransformer(EMBEDDING_MODEL)
-model_dim = embedder.get_sentence_embedding_dimension()
-if model_dim != EMBEDDING_DIM:
-    raise RuntimeError(
-        f"Embedding dimension mismatch: '{EMBEDDING_MODEL}' produces {model_dim}-d vectors but the "
-        f"schema expects {EMBEDDING_DIM}. Update database/db.txt and RTM_EMBEDDING_DIM."
-    )
-print(f"✅ Embedding model loaded ({model_dim} dimensions).")
+_embedder = None
+
+
+def get_embedder():
+    """Loads the sentence-transformer on first use; importing this module must stay cheap
+    because pulling in sentence-transformers drags the whole torch stack with it."""
+    global _embedder
+    if _embedder is not None:
+        return _embedder
+
+    from sentence_transformers import SentenceTransformer
+
+    print(f"⏳ Loading embedding model '{EMBEDDING_MODEL}'...")
+    model = SentenceTransformer(EMBEDDING_MODEL)
+    model_dim = model.get_sentence_embedding_dimension()
+    if model_dim != EMBEDDING_DIM:
+        raise RuntimeError(
+            f"Embedding dimension mismatch: '{EMBEDDING_MODEL}' produces {model_dim}-d vectors but the "
+            f"schema expects {EMBEDDING_DIM}. Update database/db.txt and RTM_EMBEDDING_DIM."
+        )
+    print(f"✅ Embedding model loaded ({model_dim} dimensions).")
+    _embedder = model
+    return _embedder
 
 
 def fetch_pending_documents(cursor):
@@ -58,7 +71,7 @@ def process_and_store_chunks(conn, cursor, doc_record):
     texts_to_embed = [item.get("text_content", "") or "" for item in items]
 
     # Normalized vectors keep cosine distance well-behaved in pgvector
-    embeddings = embedder.encode(
+    embeddings = get_embedder().encode(
         texts_to_embed,
         batch_size=32,
         normalize_embeddings=True,
@@ -107,9 +120,12 @@ def update_doc_status(cursor, doc_id, status_string):
     )
 
 
-def run_engine_2():
-    """Main execution entrypoint for Engine 2."""
+def run_engine_2(raise_on_error: bool = False):
+    """Main execution entrypoint for Engine 2. Returns (documents_chunked, failure_messages).
+    With raise_on_error the caller (the orchestrator) gets the exception instead of a log line."""
     conn = None
+    processed = 0
+    failures = []
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cursor = conn.cursor()
@@ -117,25 +133,36 @@ def run_engine_2():
         pending_docs = fetch_pending_documents(cursor)
         if not pending_docs:
             print("ℹ️ Engine 2: No 'PENDING_LINKING' documents found. Everything is up to date.")
-            return
+            return processed, failures
 
         print(f"🔍 Engine 2 Found {len(pending_docs)} document(s) pending processing.")
 
         for doc in pending_docs:
             try:
                 process_and_store_chunks(conn, cursor, doc)
+                processed += 1
             except Exception as doc_error:
-                # One bad document must not abort the whole batch
+                # One bad document must not abort the batch, nor be retried on every future run
                 conn.rollback()
+                failures.append(f"{doc[1]}: {doc_error}")
                 print(f"❌ [ENGINE 2 ERROR] Failed to process '{doc[1]}': {doc_error}")
+                update_doc_status(cursor, doc[0], 'FAILED')
+                conn.commit()
 
         cursor.close()
 
+        if failures and processed == 0 and raise_on_error:
+            raise RuntimeError("Engine 2 could not chunk any document: " + "; ".join(failures))
+
     except Exception as e:
+        if raise_on_error:
+            raise
         print(f"❌ [ENGINE 2 ERROR] Pipeline failed: {e}")
     finally:
         if conn is not None:
             conn.close()
+
+    return processed, failures
 
 
 if __name__ == "__main__":

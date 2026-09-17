@@ -189,8 +189,9 @@ def save_links_to_db(cursor, links):
 
 # --- MAIN ENGINE ENTRYPOINT ---
 
-def run_engine_3():
-    """Executes Engine 3 Pipeline."""
+def run_engine_3(raise_on_error: bool = False) -> bool:
+    """Executes Engine 3 Pipeline. With raise_on_error the caller (the orchestrator)
+    gets the exception instead of a log line."""
     print("🚀 Starting Engine 3 (The Linker)...")
     conn = None
     try:
@@ -210,11 +211,15 @@ def run_engine_3():
         conn.commit()
         cursor.close()
         print("\n🎉 Engine 3 Execution Completed Successfully!")
+        return True
 
     except Exception as e:
         if conn is not None:
             conn.rollback()
+        if raise_on_error:
+            raise
         print(f"❌ [ENGINE 3 ERROR] Pipeline execution failed: {e}")
+        return False
     finally:
         if conn is not None:
             conn.close()

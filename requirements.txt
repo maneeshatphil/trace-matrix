@@ -10,4 +10,5 @@ spacy
 pandas
 streamlit
 openpyxl
+xlsxwriter
 pydantic

@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS parsed_documents (
     doc_type VARCHAR(50) NOT NULL,                  -- 'PRS', 'PTD', 'TEST' or 'RMM'
     source_type VARCHAR(50),                        -- 'DOCX', 'PDF', 'EXCEL', 'TEST_FOLDER'
     raw_payload JSONB NOT NULL,                     -- Full parsed JSON
-    status VARCHAR(50) DEFAULT 'PENDING_LINKING',   -- PENDING_LINKING -> READY_FOR_LINKING -> LINKED
+    status VARCHAR(50) DEFAULT 'PENDING_LINKING',   -- PENDING_LINKING -> READY_FOR_LINKING -> LINKED, or FAILED
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 

@@ -29,7 +29,8 @@ def extract_doc_id(filename_or_path: str) -> str:
     match = re.search(r'(D\d{6,10})', base_name, re.IGNORECASE)
     if match:
         return match.group(1).upper()
-    return Path(filename_or_path).stem
+    # document_chunks.parent_doc_id is VARCHAR(100)
+    return Path(filename_or_path).stem[:100]
 
 
 def extract_requirement_ids(text: str) -> List[str]:
@@ -62,6 +63,15 @@ ID_HEADER_PATTERN = re.compile(
     r"\b(id|ids|identifier|req(uirement)?\s*(id|no|number)?|test\s*case|tc\s*id|item\s*(id|no))\b",
     re.IGNORECASE,
 )
+
+# document_chunks.item_id is VARCHAR(255); anything near that length is prose, not an ID
+MAX_ITEM_ID_LENGTH = 120
+
+
+def is_usable_item_id(value: str) -> bool:
+    """Header matching is deliberately fuzzy, so a column like 'Requirement Description'
+    can surface a whole paragraph. Only short single-line values are real IDs."""
+    return bool(value) and "\n" not in value and len(value) <= MAX_ITEM_ID_LENGTH
 
 
 class DocumentParser:
@@ -112,13 +122,13 @@ class DocumentParser:
                 # Identify Item ID or fallback to Row Number
                 item_id = None
                 for key, val in row_data.items():
-                    if val and ID_HEADER_PATTERN.search(key):
+                    if ID_HEADER_PATTERN.search(key) and is_usable_item_id(val):
                         item_id = val
                         break
                 if not item_id:
                     # Fall back to any cell that is itself a structured requirement ID
                     item_id = next(
-                        (v for v in row_data.values() if v and REQ_ID_PATTERN.fullmatch(v)),
+                        (v for v in row_data.values() if is_usable_item_id(v) and REQ_ID_PATTERN.fullmatch(v)),
                         None,
                     )
                 if not item_id:
@@ -349,7 +359,10 @@ def parse_and_save(target_path: str, doc_class: Optional[str] = None) -> str:
     print(f"💾 Saved Output JSON to: {output_json_path}")
 
     # 3. AUTO-INGEST DIRECTLY TO POSTGRESQL
-    ingest_to_postgres(str(output_json_path), parsed_dict_data)
+    if not ingest_to_postgres(str(output_json_path), parsed_dict_data):
+        raise RuntimeError(
+            f"Parsed '{path.name}' but the PostgreSQL ingest failed, so Engine 2 would never see it."
+        )
 
     return str(output_json_path)
 
@@ -366,4 +379,7 @@ if __name__ == "__main__":
         if not target_path.exists():
             print(f"⚠️ Skipping missing path: {target}")
             continue
-        parse_and_save(str(target_path))
+        try:
+            parse_and_save(str(target_path))
+        except Exception as exc:
+            print(f"❌ [ENGINE 1 ERROR] {target}: {exc}")

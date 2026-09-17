@@ -12,10 +12,13 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
 from src.db import postgres_client as db
+from src.pipeline import SUPPORTED_EXTENSIONS, run_pipeline, stage_uploads
 
 st.set_page_config(page_title="Traceability Matrix", page_icon="🔗", layout="wide")
 
 CACHE_TTL = 60
+PAGES = ["Overview", "Traceability matrix", "Gap analysis", "Review queue", "Item explorer"]
+STAGE_NAMES = ["Engine 1 · Ingestion", "Engine 2 · Chunking", "Engine 3 · Linking"]
 
 
 @st.cache_data(ttl=CACHE_TTL)
@@ -71,7 +74,170 @@ def build_excel(sheets: dict) -> bytes:
     return buffer.getvalue()
 
 
+# --- Pipeline orchestration UI ---
+
+
+def init_state():
+    defaults = {
+        "page": "Overview",
+        "pipeline_running": False,
+        "pipeline_paths": [],
+        "pipeline_report": None,
+        "pipeline_error": "",
+        "uploader_round": 0,
+    }
+    for key, value in defaults.items():
+        st.session_state.setdefault(key, value)
+
+
+def overlay_html(current: str, done: list) -> str:
+    steps = "".join(
+        f"<li class='{'done' if name in done else ('active' if name == current else '')}'>{name}</li>"
+        for name in STAGE_NAMES
+    )
+    return f"""
+<style>
+/* The sidebar outranks any z-index we can set from inside the main block, so it is hidden
+   outright while the engines run; that also stops a mid-run click from interrupting them. */
+[data-testid="stSidebar"], header[data-testid="stHeader"] {{ display: none !important; }}
+#rtm-overlay {{
+  position: fixed; inset: 0; z-index: 99999;
+  background: rgba(10, 13, 20, 0.92);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}}
+#rtm-overlay .rtm-spinner {{
+  width: 76px; height: 76px; border-radius: 50%;
+  border: 6px solid rgba(255, 255, 255, 0.14);
+  border-top-color: #ff4b4b;
+  animation: rtm-spin 0.9s linear infinite;
+}}
+@keyframes rtm-spin {{ to {{ transform: rotate(360deg); }} }}
+#rtm-overlay .rtm-title {{ margin-top: 22px; color: #fafafa; font-size: 1.15rem; font-weight: 600; }}
+#rtm-overlay ul {{ list-style: none; padding: 0; margin: 14px 0 0; color: rgba(250,250,250,0.45); }}
+#rtm-overlay li {{ margin: 6px 0; font-size: 0.92rem; }}
+#rtm-overlay li.active {{ color: #fafafa; }}
+#rtm-overlay li.done {{ color: #2ecc71; }}
+#rtm-overlay li.done::after {{ content: " ✓"; }}
+</style>
+<div id="rtm-overlay">
+  <div class="rtm-spinner"></div>
+  <div class="rtm-title">{current}</div>
+  <ul>{steps}</ul>
+</div>
+"""
+
+
+def execute_pending_pipeline():
+    """Blocks the script run behind a full-screen overlay until Engine 3 finishes."""
+    overlay = st.empty()
+    completed: list = []
+    overlay.markdown(overlay_html("Starting pipeline…", completed), unsafe_allow_html=True)
+
+    def progress(stage: str, state: str, detail: str):
+        if state == "done":
+            completed.append(stage)
+            label = f"{stage} complete"
+        elif state == "retry":
+            label = f"{stage} failed — retrying…"
+        elif state == "failed":
+            label = f"{stage} failed"
+        else:
+            label = f"{stage} running…"
+        overlay.markdown(overlay_html(label, completed), unsafe_allow_html=True)
+
+    report = None
+    error = ""
+    try:
+        report = run_pipeline(st.session_state.pipeline_paths, progress)
+    except Exception as exc:
+        error = str(exc)
+
+    overlay.empty()
+    st.session_state.pipeline_running = False
+    st.session_state.pipeline_report = report
+    st.session_state.pipeline_error = error
+
+    if report is not None and report.ok:
+        st.cache_data.clear()
+        # Applied on the next run: the radio bound to "page" is not instantiated yet there.
+        st.session_state.pending_nav = "Traceability matrix"
+
+    st.rerun()
+
+
+def render_pipeline_notice():
+    # Read-and-clear: the outcome is a one-shot notification, not persistent page state.
+    error = st.session_state.pipeline_error
+    report = st.session_state.pipeline_report
+    st.session_state.pipeline_error = ""
+    st.session_state.pipeline_report = None
+
+    if error:
+        st.error(f"Pipeline could not start: {error}", icon="🚨")
+        return
+
+    if report is None:
+        return
+
+    if report.ok:
+        detail = " ".join(stage.detail for stage in report.stages if stage.detail)
+        st.success(f"Pipeline finished. {detail}", icon="✅")
+        if report.failed_inputs:
+            st.warning(
+                "Some inputs were skipped:\n\n"
+                + "\n".join(f"- {item}" for item in report.failed_inputs),
+                icon="⚠️",
+            )
+    else:
+        st.error(
+            f"Pipeline stopped at **{report.first_error()}**\n\n"
+            f"The step was retried automatically and failed again.",
+            icon="🚨",
+        )
+        if st.button("Retry pipeline", type="primary"):
+            st.session_state.pipeline_running = True
+            st.rerun()
+
+
+def render_upload_panel():
+    st.markdown("### Add documents")
+    st.caption(
+        "Upload requirement, design, risk or test documents. "
+        "Test-evidence folders must be uploaded as a `.zip` archive."
+    )
+
+    uploads = st.file_uploader(
+        "Requirement / design / risk / test files",
+        type=SUPPORTED_EXTENSIONS,
+        accept_multiple_files=True,
+        key=f"uploader_{st.session_state.uploader_round}",
+    )
+
+    folder_path = st.text_input(
+        "Or a folder path on this machine (optional)",
+        placeholder=r"d:\trace-matrix\data\PR.SmartNavigator...",
+    )
+
+    has_input = bool(uploads) or bool(folder_path.strip())
+    if st.button("Run pipeline", type="primary", disabled=not has_input):
+        try:
+            staged = stage_uploads(uploads, [folder_path] if folder_path.strip() else [])
+        except Exception as exc:
+            st.error(f"Could not stage the input: {exc}", icon="🚨")
+            return
+
+        st.session_state.pipeline_paths = [str(p) for p in staged]
+        st.session_state.pipeline_report = None
+        st.session_state.pipeline_error = ""
+        st.session_state.pipeline_running = True
+        st.session_state.uploader_round += 1
+        st.rerun()
+
+
 def render_overview():
+    render_upload_panel()
+    st.divider()
+
     st.subheader("Coverage overview")
     summary = load_summary()
 
@@ -307,7 +473,12 @@ def render_explorer():
 
 
 def main():
-    st.title("🔗 Automated Traceability Matrix")
+    st.title("Automated Traceability Matrix")
+    init_state()
+
+    pending_nav = st.session_state.pop("pending_nav", None)
+    if pending_nav in PAGES:
+        st.session_state.page = pending_nav
 
     healthy, message = db.check_health()
     if not healthy:
@@ -317,16 +488,19 @@ def main():
         )
         st.stop()
 
+    if st.session_state.pipeline_running:
+        execute_pending_pipeline()
+        return
+
     with st.sidebar:
         st.success("Database connected")
-        page = st.radio(
-            "View",
-            ["Overview", "Traceability matrix", "Gap analysis", "Review queue", "Item explorer"],
-        )
+        page = st.radio("View", PAGES, key="page")
         if st.button("Refresh data"):
             st.cache_data.clear()
             st.rerun()
         st.caption("Pipeline: Engine 1 ingest → Engine 2 embed → Engine 3 link")
+
+    render_pipeline_notice()
 
     if page == "Overview":
         render_overview()
